@@ -8,6 +8,7 @@ Ricerca statica multilingua per WordPress con indice [Fuse.js](https://fusejs.io
 
 ## Funzionalità
 
+- **Generazione in background** — la generazione dell'indice avviene interamente sul server; puoi chiudere la pagina e riaprirla in seguito per vedere il risultato
 - **Ricerca client-side** — nessuna query al database, zero latenza
 - **Multilingua** — genera un indice JSON separato per ogni lingua
 - **Traduzione batch** — titoli ed excerpt vengono tradotti in blocchi di 10 tramite qualsiasi endpoint compatibile LibreTranslate
@@ -66,6 +67,14 @@ define( 'SFS_TARGET_LANGS', 'en,fr,de' ); // lingue target separate da virgola
 ---
 
 ## Come funziona
+
+### Generazione in background
+
+Quando clicchi **Ricostruzione Completa** o **Aggiorna**, il browser riceve subito una conferma di avvio e la connessione HTTP si chiude. Il server prosegue l'esecuzione in modo autonomo tramite `ignore_user_abort(true)` — puoi chiudere la tab o il browser senza interrompere il processo.
+
+Lo stato, il progresso e il log vengono scritti nelle opzioni di WordPress e letti dal browser ogni 2 secondi tramite polling. Se riapri la pagina mentre un job è in corso, il polling riprende automaticamente da dove si era fermato.
+
+> 💡 Su hosting con PHP-FPM la connessione viene chiusa tramite `fastcgi_finish_request()`. Su Apache/Nginx classico viene usato `flush()` con l'header `Connection: close`.
 
 ### Ricostruzione Completa
 

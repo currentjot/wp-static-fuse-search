@@ -6,6 +6,25 @@ Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.0.0/) e il p
 
 ---
 
+## [1.2.0] — 2025-03-15
+
+### Aggiunto
+- Generazione dell'indice completamente server-side: il browser riceve subito la conferma di avvio e la connessione HTTP si chiude; il server prosegue autonomamente tramite `ignore_user_abort(true)` e `set_time_limit(0)`
+- Supporto `fastcgi_finish_request()` per PHP-FPM; fallback a `flush()` con header `Connection: close` per Apache/Nginx
+- Polling del browser ogni 2 secondi tramite endpoint `sfs_bg_status` per aggiornare progresso e log in tempo reale senza bloccare l'interfaccia
+- Resume automatico del polling se la pagina viene riaperta mentre un job è in corso (rilevato dal flag `sfs_bg_status = running` nelle opzioni di WordPress)
+- Stato del job persistito nelle opzioni di WordPress (`sfs_bg_status`, `sfs_bg_log`, `sfs_bg_progress`, `sfs_bg_label`, `sfs_bg_result`)
+- Notifica inline blu "Puoi chiudere questa pagina" durante la generazione
+- Protezione contro avvii multipli simultanei: se un job è già in corso il server restituisce errore
+- Fallback automatico per chunk di traduzione falliti: vengono mantenuti i testi originali invece di interrompere il processo
+
+### Modificato
+- Tutta la logica di traduzione e salvataggio spostata dal browser al server (`bg_run_rebuild`, `bg_run_update`, `bg_translate_all`, `translate_chunk`)
+- Rimossi gli endpoint AJAX browser-driven precedenti (`sfs_init`, `sfs_translate`, `sfs_save`, `sfs_update_init`, `sfs_update_apply`) sostituiti da `sfs_bg_start` e `sfs_bg_status`
+- I pulsanti **Ricostruzione Completa** e **Aggiorna** sono disabilitati automaticamente se un job è già in esecuzione
+
+---
+
 ## [1.1.0] — 2025-03-15
 
 ### Aggiunto
