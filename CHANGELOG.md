@@ -6,6 +6,23 @@ Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.0.0/) e il p
 
 ---
 
+## [1.1.0] — 2025-03-15
+
+### Aggiunto
+- Aggiornamento incrementale dell'indice: aggiunge solo i nuovi post e rimuove quelli eliminati senza ricostruire tutto (`sfs_update_init`, `sfs_update_apply`)
+- File `_meta.json` generato ad ogni ricostruzione completa, contenente l'elenco di ID e URL indicizzati — usato come riferimento per la diff incrementale
+- Toggle on/off per il frontend: interruttore nell'admin che abilita o disabilita il dropdown di ricerca su tutto il sito senza disattivare il plugin (`sfs_frontend_enabled`, salvato nelle opzioni di WordPress)
+- Pulsante **Elimina Indici**: rimuove tutti i file `index-*.json` e `_meta.json` con richiesta di conferma
+- Quarta card statistica "Nell'indice corrente" che mostra il numero di voci attualmente indicizzate
+- Pulsanti admin distinti per funzione: **Ricostruzione Completa**, **Aggiorna**, **Elimina Indici**
+- Animazione di caricamento (spin) sui pulsanti durante l'operazione in corso
+- Avviso inline nella card di gestione se `SFS_TRANSLATE_API` non è configurata
+
+### Corretto
+- Salvataggio dell'opzione booleana del toggle frontend tramite stringhe `'1'`/`'0'` per compatibilità con `update_option` di WordPress (il cast `bool` impediva il salvataggio di `false`)
+
+---
+
 ## [1.0.0] — 2025-03-14
 
 Primo rilascio stabile.
