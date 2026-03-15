@@ -1,0 +1,36 @@
+name: Build & Package Plugin
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Prepare Directory Structure
+        run: |
+          mkdir wp-static-fuse-search
+
+          cp wp-static-fuse-search.php wp-static-fuse-search/
+          cp README.md wp-static-fuse-search/
+
+          if [ -f CHANGELOG.md ]; then cp CHANGELOG.md wp-static-fuse-search/; fi
+          if [ -f LICENSE ];      then cp LICENSE      wp-static-fuse-search/; fi
+          if [ -f index.php ];    then cp index.php    wp-static-fuse-search/; fi
+
+      - name: Zip Plugin
+        run: zip -r wp-static-fuse-search.zip wp-static-fuse-search
+
+      - name: Upload Asset to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: wp-static-fuse-search.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
