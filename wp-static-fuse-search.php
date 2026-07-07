@@ -3,7 +3,7 @@
  * Plugin Name:       Static Fuse.js Search
  * Plugin URI:        https://github.com/currentjot/wp-static-fuse-search
  * Description:       Ricerca statica multilingua con indice Fuse.js, traduzione batch e rilevamento automatico degli URL tramite hreflang.
- * Version:           1.2.0
+ * Version:           1.3.0
  * Requires at least: 6.0
  * Requires PHP:      8.0
  * Author:            Dev
@@ -62,6 +62,14 @@ class Minimal_Static_Fuse_Search {
         return get_option('sfs_frontend_enabled', '1') !== '0';
     }
 
+    private function is_auto_sync_enabled(): bool {
+        return get_option('sfs_auto_sync', '1') !== '0';
+    }
+
+    private function has_index(): bool {
+        return file_exists($this->dir . '/_meta.json');
+    }
+
     // ── Bootstrap ─────────────────────────────────────────────────────
 
     public function __construct() {
@@ -80,6 +88,146 @@ class Minimal_Static_Fuse_Search {
         // Endpoint amministrativi
         add_action('wp_ajax_sfs_delete_indexes', [$this, 'ajax_delete_indexes']);
         add_action('wp_ajax_sfs_toggle',         [$this, 'ajax_toggle']);
+
+        // Auto-sync indice: pubblicazione/modifica/eliminazione contenuti.
+        // La sincronizzazione vera avviene via WP-Cron per non rallentare l'editor.
+        add_action('save_post',      [$this, 'on_save_post'], 20, 3);
+        add_action('trashed_post',   [$this, 'on_remove_post']);
+        add_action('deleted_post',   [$this, 'on_remove_post']);
+        add_action('sfs_sync_post_event', [$this, 'cron_sync_post']);
+    }
+
+    // ── Auto-sync: hook editoriali ────────────────────────────────────
+
+    public function on_save_post(int $post_id, $post, bool $update): void {
+        if (!$this->is_auto_sync_enabled() || !$this->has_index()) return;
+        if (wp_is_post_revision($post_id) || wp_is_post_autosave($post_id)) return;
+        if (!$post || !in_array($post->post_type, ['post', 'page'], true)) return;
+
+        if ($post->post_status === 'publish') {
+            // Pianifica sincronizzazione (aggiunta o aggiornamento titolo/slug/estratto).
+            if (!wp_next_scheduled('sfs_sync_post_event', [$post_id])) {
+                wp_schedule_single_event(time() + 5, 'sfs_sync_post_event', [$post_id]);
+            }
+        } else {
+            // Non più pubblico (bozza, privato, in attesa): rimuovi subito dall'indice.
+            $this->sync_remove_post($post_id);
+        }
+    }
+
+    public function on_remove_post(int $post_id): void {
+        if (!$this->is_auto_sync_enabled() || !$this->has_index()) return;
+        $post = get_post($post_id);
+        if ($post && !in_array($post->post_type, ['post', 'page'], true)) return;
+        $this->sync_remove_post($post_id);
+    }
+
+    /**
+     * Cron: sincronizza un singolo post nell'indice.
+     * Sistema e controlla in automatico titolo, estratto e URL/slug
+     * (anche nelle lingue target, ritraducendo il contenuto se necessario).
+     */
+    public function cron_sync_post(int $post_id): void {
+        if (!$this->is_auto_sync_enabled() || !$this->has_index()) return;
+
+        $post = get_post($post_id);
+        if (!$post || $post->post_status !== 'publish'
+            || !in_array($post->post_type, ['post', 'page'], true)) {
+            $this->sync_remove_post($post_id);
+            return;
+        }
+
+        $sl    = $this->source_lang();
+        $tl    = $this->translate_api() !== null ? $this->target_langs() : [];
+        $src   = get_permalink($post);
+        $hrefs = $this->hreflang_map($src);
+        $urls  = [$sl => $src];
+        foreach ($tl as $lang) {
+            $key = strtolower($lang);
+            $urls[$lang] = $hrefs[$key] ?? $hrefs[strtok($key, '-')] ?? $src;
+        }
+
+        $entry = [
+            'id'      => $post->ID,
+            'title'   => html_entity_decode(get_the_title($post)),
+            'url'     => $src,
+            'urls'    => $urls,
+            'excerpt' => wp_trim_words(wp_strip_all_tags($post->post_content), 15),
+        ];
+
+        // Recupera la voce precedente dal meta (per rilevare cambio slug/URL).
+        $meta     = $this->read_meta();
+        $old      = null;
+        foreach ($meta['entries'] ?? [] as $e) {
+            if ((int) ($e['id'] ?? 0) === $post->ID) { $old = $e; break; }
+        }
+        $old_url  = $old['url']  ?? null;
+        $old_urls = $old['urls'] ?? [];
+
+        // 1) Indice lingua sorgente: rimuovi vecchia riga (per URL vecchio e nuovo) e aggiungi quella aggiornata.
+        $index = $this->load_index($sl);
+        $index = array_values(array_filter($index, fn($e) =>
+            ($e['url'] ?? '') !== $src && ($old_url === null || ($e['url'] ?? '') !== $old_url)
+        ));
+        $index[] = ['title' => $entry['title'], 'url' => $src, 'excerpt' => $entry['excerpt']];
+        file_put_contents("{$this->dir}/index-{$sl}.json", json_encode(array_values($index)), LOCK_EX);
+
+        // 2) Indici lingue target: aggiorna riga (URL corretto + testi ritradotti).
+        foreach ($tl as $lang) {
+            $key        = strtolower($lang);
+            $translated = $this->translate_chunk([$entry], $sl, $lang)[0] ?? null;
+            if (!$translated) continue;
+
+            $old_t_url = $old_urls[$lang] ?? $old_urls[$key] ?? $old_url;
+            $new_t_url = $translated['url'];
+
+            $t_index = $this->load_index($lang);
+            $t_index = array_values(array_filter($t_index, fn($e) =>
+                ($e['url'] ?? '') !== $new_t_url && ($old_t_url === null || ($e['url'] ?? '') !== $old_t_url)
+            ));
+            $t_index[] = $translated;
+            file_put_contents("{$this->dir}/index-{$lang}.json", json_encode(array_values($t_index)), LOCK_EX);
+        }
+
+        // 3) Aggiorna il meta (id + URL correnti, inclusa la mappa per lingua).
+        $entries = array_values(array_filter($meta['entries'] ?? [], fn($e) => (int) ($e['id'] ?? 0) !== $post->ID));
+        $entries[] = ['id' => $post->ID, 'url' => $src, 'urls' => $urls];
+        file_put_contents("{$this->dir}/_meta.json", json_encode(['entries' => $entries, 'ts' => time()]), LOCK_EX);
+    }
+
+    /**
+     * Rimuove un post da tutti gli indici e dal meta.
+     */
+    private function sync_remove_post(int $post_id): void {
+        $meta = $this->read_meta();
+        $old  = null;
+        foreach ($meta['entries'] ?? [] as $e) {
+            if ((int) ($e['id'] ?? 0) === $post_id) { $old = $e; break; }
+        }
+        if (!$old) return;
+
+        $old_url  = $old['url']  ?? '';
+        $old_urls = $old['urls'] ?? [];
+        $sl       = $this->source_lang();
+        $tl       = $this->translate_api() !== null ? $this->target_langs() : [];
+
+        // Indice sorgente.
+        $index = $this->load_index($sl);
+        $index = array_values(array_filter($index, fn($e) => ($e['url'] ?? '') !== $old_url));
+        file_put_contents("{$this->dir}/index-{$sl}.json", json_encode(array_values($index)), LOCK_EX);
+
+        // Indici target.
+        foreach ($tl as $lang) {
+            $key       = strtolower($lang);
+            $old_t_url = $old_urls[$lang] ?? $old_urls[$key] ?? $old_url;
+            $t_index   = $this->load_index($lang);
+            $t_index   = array_values(array_filter($t_index, fn($e) => ($e['url'] ?? '') !== $old_t_url));
+            file_put_contents("{$this->dir}/index-{$lang}.json", json_encode(array_values($t_index)), LOCK_EX);
+        }
+
+        // Meta.
+        $entries = array_values(array_filter($meta['entries'] ?? [], fn($e) => (int) ($e['id'] ?? 0) !== $post_id));
+        file_put_contents("{$this->dir}/_meta.json", json_encode(['entries' => $entries, 'ts' => time()]), LOCK_EX);
     }
 
     // ── Admin ─────────────────────────────────────────────────────────
@@ -105,6 +253,7 @@ class Minimal_Static_Fuse_Search {
         $post_count   = wp_count_posts('post')->publish + wp_count_posts('page')->publish;
         $last_update  = $index_files ? date_i18n('d/m/Y H:i', filemtime(end($index_files))) : '—';
         $fe_enabled   = $this->is_frontend_enabled();
+        $auto_sync    = $this->is_auto_sync_enabled();
         $has_api      = $this->translate_api() !== null;
         $meta         = $this->read_meta();
         $indexed_count = count($meta['entries'] ?? []);
@@ -213,6 +362,16 @@ class Minimal_Static_Fuse_Search {
                         </div>
                         <label class="sfs-switch">
                             <input type="checkbox" id="sfs-fe-toggle" <?= $fe_enabled ? 'checked' : '' ?>>
+                            <span class="sfs-slider"></span>
+                        </label>
+                    </div>
+                    <div class="sfs-toggle-row" style="margin-top:16px;padding-top:16px;border-top:1px solid #f0f0f1">
+                        <div>
+                            <span class="sfs-toggle-label">Aggiornamento automatico dell'indice</span>
+                            <p>Quando un articolo o una pagina viene pubblicato, modificato o eliminato, l'indice viene sistemato e controllato in automatico — incluso l'URL in caso di cambio slug/permalink, anche negli indici delle lingue tradotte.</p>
+                        </div>
+                        <label class="sfs-switch">
+                            <input type="checkbox" id="sfs-as-toggle" <?= $auto_sync ? 'checked' : '' ?>>
                             <span class="sfs-slider"></span>
                         </label>
                     </div>
@@ -431,7 +590,11 @@ class Minimal_Static_Fuse_Search {
             // ── Toggle Frontend ────────────────────────────────────────
 
             feToggle.addEventListener('change', () =>
-                req('sfs_toggle', { enabled: feToggle.checked ? 1 : 0 }));
+                req('sfs_toggle', { key: 'frontend', enabled: feToggle.checked ? 1 : 0 }));
+
+            const asToggle = $('sfs-as-toggle');
+            asToggle.addEventListener('change', () =>
+                req('sfs_toggle', { key: 'autosync', enabled: asToggle.checked ? 1 : 0 }));
 
             // ── Auto-resume se job in corso al caricamento pagina ─────
 
@@ -522,8 +685,9 @@ class Minimal_Static_Fuse_Search {
             $posts = [];
             $query = new WP_Query([
                 'post_type'      => ['post', 'page'],
-                'posts_per_page' => 500,
+                'posts_per_page' => -1,
                 'post_status'    => 'publish',
+                'no_found_rows'  => true,
             ]);
 
             $total = count($query->posts);
@@ -590,8 +754,9 @@ class Minimal_Static_Fuse_Search {
 
             $query = new WP_Query([
                 'post_type'      => ['post', 'page'],
-                'posts_per_page' => 500,
+                'posts_per_page' => -1,
                 'post_status'    => 'publish',
+                'no_found_rows'  => true,
                 'fields'         => 'ids',
             ]);
             $current_ids  = array_map('intval', $query->posts);
@@ -639,12 +804,12 @@ class Minimal_Static_Fuse_Search {
             $src_index = array_values(array_filter($src_index, fn($e) => !in_array($e['url'], $removed_urls)));
             foreach ($new_posts as $np)
                 $src_index[] = ['title' => $np['title'], 'url' => $np['url'], 'excerpt' => $np['excerpt']];
-            file_put_contents("{$this->dir}/index-{$sl}.json", json_encode(array_values($src_index)));
+            file_put_contents("{$this->dir}/index-{$sl}.json", json_encode(array_values($src_index)), LOCK_EX);
 
             // Aggiorna meta
             $new_entries = array_values(array_filter($meta['entries'] ?? [], fn($e) => !in_array($e['id'], $removed_ids)));
-            foreach ($new_posts as $np) $new_entries[] = ['id' => $np['id'], 'url' => $np['url']];
-            file_put_contents("{$this->dir}/_meta.json", json_encode(['entries' => $new_entries, 'ts' => time()]));
+            foreach ($new_posts as $np) $new_entries[] = ['id' => $np['id'], 'url' => $np['url'], 'urls' => $np['urls'] ?? []];
+            file_put_contents("{$this->dir}/_meta.json", json_encode(['entries' => $new_entries, 'ts' => time()]), LOCK_EX);
 
             $this->bg_log("Indice {$sl} aggiornato", 'ok');
             $this->bg_progress(15, "Indice {$sl} aggiornato");
@@ -660,7 +825,7 @@ class Minimal_Static_Fuse_Search {
                 foreach ($tl as $lang) {
                     $existing = $this->load_index($lang);
                     $existing = array_values(array_filter($existing, fn($e) => in_array($e['url'], $src_urls)));
-                    file_put_contents("{$this->dir}/index-{$lang}.json", json_encode($existing));
+                    file_put_contents("{$this->dir}/index-{$lang}.json", json_encode($existing), LOCK_EX);
                     $this->bg_log("Rimossi da {$lang}", 'ok');
                 }
             }
@@ -703,7 +868,7 @@ class Minimal_Static_Fuse_Search {
                 $existing = array_values(array_filter($existing, fn($e) => in_array($e['url'], $src_urls)));
                 $out      = array_merge($existing, $out);
             }
-            file_put_contents("{$this->dir}/index-{$lang}.json", json_encode(array_values($out)));
+            file_put_contents("{$this->dir}/index-{$lang}.json", json_encode(array_values($out)), LOCK_EX);
             $this->bg_log("Indice {$lang} salvato", 'ok');
             $this->bg_progress((int)($p_from + (($li + 1) / count($tl)) * $range), "Indice {$lang} salvato");
         }
@@ -759,8 +924,21 @@ class Minimal_Static_Fuse_Search {
 
     public function ajax_toggle(): void {
         check_ajax_referer('sfs_nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permessi insufficienti.');
+            return;
+        }
         $enabled = (($_POST['enabled'] ?? '1') === '1') ? '1' : '0';
-        update_option('sfs_frontend_enabled', $enabled);
+        $key     = sanitize_key($_POST['key'] ?? 'frontend');
+        $map     = [
+            'frontend' => 'sfs_frontend_enabled',
+            'autosync' => 'sfs_auto_sync',
+        ];
+        if (!isset($map[$key])) {
+            wp_send_json_error('Chiave non valida.');
+            return;
+        }
+        update_option($map[$key], $enabled);
         wp_send_json_success();
     }
 
@@ -848,7 +1026,8 @@ class Minimal_Static_Fuse_Search {
             json_encode(array_values(array_map(
                 fn($p) => ['title' => $p['title'], 'url' => $p['url'], 'excerpt' => $p['excerpt']],
                 $posts
-            )))
+            ))),
+            LOCK_EX
         );
     }
 
@@ -860,9 +1039,9 @@ class Minimal_Static_Fuse_Search {
 
     private function write_meta(array $posts): void {
         file_put_contents("{$this->dir}/_meta.json", json_encode([
-            'entries' => array_values(array_map(fn($p) => ['id' => $p['id'], 'url' => $p['url']], $posts)),
+            'entries' => array_values(array_map(fn($p) => ['id' => $p['id'], 'url' => $p['url'], 'urls' => $p['urls'] ?? []], $posts)),
             'ts'      => time(),
-        ]));
+        ]), LOCK_EX);
     }
 
     private function read_meta(): array {
@@ -925,6 +1104,7 @@ CSS);
             if (!inputs.length) return;
 
             let fuse = null, active = -1;
+            const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
             const lang = (document.documentElement.lang || '$sl').split('-')[0];
             const ico  = '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M19 19l-3.5-3.5"/></svg>';
 
@@ -956,12 +1136,12 @@ CSS);
                     box.innerHTML = res.length
                         ? res.map(r =>
                             '<div class="sfs-row" role="option">' +
-                            '<a href="' + r.item.url + '">' +
+                            '<a href="' + esc(r.item.url) + '">' +
                             '<div class="sfs-ico">' + ico + '</div>' +
-                            '<div><strong>' + r.item.title + '</strong><span>' + r.item.excerpt + '</span></div>' +
+                            '<div><strong>' + esc(r.item.title) + '</strong><span>' + esc(r.item.excerpt) + '</span></div>' +
                             '</a></div>'
                           ).join('') + '<div class="sfs-foot">↑↓ naviga &middot; ↵ apri &middot; Esc chiudi</div>'
-                        : '<div class="sfs-msg">Nessun risultato per <strong>"' + q + '"</strong></div>';
+                        : '<div class="sfs-msg">Nessun risultato per <strong>"' + esc(q) + '"</strong></div>';
                     box.style.display = 'block';
                     active = -1;
                 };

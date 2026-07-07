@@ -14,7 +14,9 @@ Ricerca statica multilingua per WordPress con indice [Fuse.js](https://fusejs.io
 - **Traduzione batch** — titoli ed excerpt vengono tradotti in blocchi di 10 tramite qualsiasi endpoint compatibile LibreTranslate
 - **URL tradotti automatici** — legge i tag `<link rel="alternate" hreflang>` direttamente dall'HTML di ogni post; funziona con qualsiasi plugin di traduzione (WPLNG, WPML, Polylang, ecc.)
 - **Aggiornamento incrementale** — aggiunge solo i nuovi post e rimuove quelli eliminati senza ricostruire l'indice da zero
+- **Aggiornamento automatico** — (preferenza attivabile, attiva di default) quando pubblichi, modifichi o elimini un articolo/pagina, l'indice viene sistemato e controllato in automatico via WP-Cron; anche l'URL viene corretto se cambi lo slug/permalink, in tutte le lingue
 - **Toggle frontend** — abilita o disabilita il dropdown di ricerca direttamente dall'admin, senza disattivare il plugin
+- **Toggle auto-sync** — attiva o disattiva l'aggiornamento automatico dell'indice al salvataggio dei contenuti
 - **Elimina indici** — rimuove tutti i file JSON generati in un click
 - **Interfaccia admin** — pannello con statistiche, barra di avanzamento e log in tempo reale
 - **Dropdown ricerca** — si aggancia a qualsiasi `input[type="search"]` o `input[name="s"]` già presente nel tema

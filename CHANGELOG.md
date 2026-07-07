@@ -6,6 +6,23 @@ Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.0.0/) e il p
 
 ---
 
+## [1.3.0] — 2026-07-07
+
+### Aggiunto
+- **Aggiornamento automatico dell'indice** (preferenza attivabile, attiva di default): quando un articolo o una pagina viene pubblicato, modificato o eliminato, l'indice viene sistemato e controllato in automatico senza dover premere "Aggiorna"
+- **Controllo automatico dello slug**: se il permalink/slug di un contenuto cambia, l'URL viene corretto in tutti gli indici, comprese le lingue tradotte (via mappa hreflang salvata nel `_meta.json`)
+- La sincronizzazione avviene tramite WP-Cron (evento singolo `sfs_sync_post_event` ~5 secondi dopo il salvataggio) per non rallentare l'editor; la rimozione dall'indice (cestino, eliminazione, ritorno a bozza) è immediata
+- Nuovo toggle "Aggiornamento automatico dell'indice" nella pagina Strumenti → Indice Ricerca
+- Il file `_meta.json` ora memorizza anche la mappa degli URL per lingua di ogni contenuto
+
+### Corretto
+- **Sicurezza (XSS)**: titolo, estratto e query di ricerca ora vengono correttamente escapati nel dropdown dei risultati frontend
+- L'endpoint `sfs_toggle` ora verifica la capability `manage_options`
+- Rimosso il limite di 500 contenuti indicizzabili: ora vengono indicizzati tutti i contenuti pubblicati (`posts_per_page => -1`)
+- Tutte le scritture dei file indice usano `LOCK_EX` per evitare corruzioni in caso di scritture concorrenti
+
+---
+
 ## [1.2.0] — 2025-03-15
 
 ### Aggiunto
